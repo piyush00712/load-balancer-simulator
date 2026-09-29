@@ -1,0 +1,17 @@
+{
+  "name": "load-balancer-simulator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A load balancer simulator with round-robin and least-connections routing, backend server nodes, and a request queue for traffic bursts",
+  "main": "loadbalancer/server.js",
+  "scripts": {
+    "start": "node loadbalancer/server.js",
+    "start:backends": "node backend/server.js",
+    "demo": "node demo/run-demo.js",
+    "dashboard": "node demo/start-dashboard.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "http-proxy": "^1.18.1"
+  }
+}

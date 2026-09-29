@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Load Balancer — Live Dashboard</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="statusbar">
+  <div class="live"><span class="live-dot"></span> live</div>
+  <div>load-balancer-simulator</div>
+</div>
+
+<main>
+  <h1>Load Balancer — Live Dashboard</h1>
+  <p class="lede">Polling <code>/stats</code> every 500ms from the real, running load balancer. The button below sends real traffic through <code>/work</code> — nothing here is simulated in the browser.</p>
+
+  <div class="config-row" id="config-row"></div>
+
+  <div class="section-label">backend pool</div>
+  <div class="server-grid" id="server-grid"></div>
+
+  <div class="section-label">request queue</div>
+  <div class="queue-panel">
+    <div class="queue-header">
+      <span class="target">overflow queue</span>
+      <span class="depth" id="queue-depth-label">0 waiting</span>
+    </div>
+    <div class="bar-track"><div class="bar-fill" id="queue-bar"></div></div>
+    <div class="queue-stats">
+      <span>total queued <span class="n" id="queue-total">0</span></span>
+      <span>max depth seen <span class="n" id="queue-max">0</span></span>
+    </div>
+  </div>
+
+  <div class="section-label">generate traffic</div>
+  <div class="burst-panel">
+    <label for="burst-count">requests</label>
+    <input type="number" id="burst-count" value="30" min="1" max="500">
+    <button id="burst-btn" type="button">Fire burst</button>
+    <span class="burst-status" id="burst-status"></span>
+  </div>
+
+  <div class="section-label">recent requests</div>
+  <div class="log" id="log">
+    <div class="log-empty">No requests yet — fire a burst above.</div>
+  </div>
+</main>
+
+<script>
+  const configRow = document.getElementById('config-row');
+  const serverGrid = document.getElementById('server-grid');
+  const queueBar = document.getElementById('queue-bar');
+  const queueDepthLabel = document.getElementById('queue-depth-label');
+  const queueTotal = document.getElementById('queue-total');
+  const queueMax = document.getElementById('queue-max');
+  const log = document.getElementById('log');
+  const burstBtn = document.getElementById('burst-btn');
+  const burstCount = document.getElementById('burst-count');
+  const burstStatus = document.getElementById('burst-status');
+
+  let requestCounter = 0;
+  let renderedServerIds = [];
+
+  function renderConfig(data) {
+    configRow.innerHTML = `
+      <span class="config-chip">strategy <strong>${data.strategy}</strong></span>
+      <span class="config-chip">max/server <strong>${data.maxConcurrentPerServer}</strong></span>
+      <span class="config-chip">pool size <strong>${data.servers.length}</strong></span>
+    `;
+  }
+
+  function renderServers(data) {
+    const ids = data.servers.map(s => s.target).join(',');
+    if (ids !== renderedServerIds.join(',')) {
+      // pool changed shape — rebuild cards
+      renderedServerIds = data.servers.map(s => s.target);
+      serverGrid.innerHTML = data.servers.map((s, i) => `
+        <div class="server-card">
+          <div class="target">${s.target}</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-${i}"></div></div>
+          <div class="server-meta">
+            <span>active <span class="n" id="active-${i}">0</span>/${data.maxConcurrentPerServer}</span>
+            <span>routed <span class="n" id="routed-${i}">0</span></span>
+          </div>
+        </div>
+      `).join('');
+    }
+    data.servers.forEach((s, i) => {
+      const pct = Math.min(100, (s.activeConnections / data.maxConcurrentPerServer) * 100);
+      document.getElementById(`bar-${i}`).style.width = pct + '%';
+      document.getElementById(`active-${i}`).textContent = s.activeConnections;
+      document.getElementById(`routed-${i}`).textContent = s.totalRouted;
+    });
+  }
+
+  function renderQueue(data) {
+    const q = data.queue;
+    const denom = Math.max(1, q.maxDepthSeen, 10);
+    const pct = Math.min(100, (q.currentLength / denom) * 100);
+    queueBar.style.width = pct + '%';
+    queueDepthLabel.textContent = `${q.currentLength} waiting`;
+    queueTotal.textContent = q.totalEverQueued;
+    queueMax.textContent = q.maxDepthSeen;
+  }
+
+  async function pollStats() {
+    try {
+      const res = await fetch('/stats');
+      const data = await res.json();
+      renderConfig(data);
+      renderServers(data);
+      renderQueue(data);
+    } catch (e) {
+      // load balancer briefly unreachable — ignore, next poll will retry
+    }
+  }
+
+  function logRequest(n, result) {
+    if (log.querySelector('.log-empty')) log.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    if (result.ok) {
+      row.innerHTML = `
+        <span class="req-n">#${n}</span>
+        <span class="served">${result.servedBy}</span>
+        <span class="delay">${result.delayMs}ms</span>
+        <span>ok</span>
+      `;
+    } else {
+      row.innerHTML = `
+        <span class="req-n">#${n}</span>
+        <span class="served" style="color:var(--warn)">error</span>
+        <span>${result.message || 'request failed'}</span>
+      `;
+    }
+    log.insertBefore(row, log.firstChild);
+    while (log.children.length > 60) log.removeChild(log.lastChild);
+  }
+
+  burstBtn.addEventListener('click', async () => {
+    const count = Math.max(1, Math.min(500, Number(burstCount.value) || 30));
+    burstBtn.disabled = true;
+    burstStatus.textContent = `firing ${count} requests…`;
+    try {
+      const res = await fetch(`/burst?count=${count}`);
+      const data = await res.json();
+      data.results.forEach((r) => {
+        requestCounter += 1;
+        logRequest(requestCounter, r);
+      });
+      burstStatus.textContent = `done — ${count} requests completed`;
+    } catch (e) {
+      burstStatus.textContent = `burst failed: ${e.message}`;
+    }
+    burstBtn.disabled = false;
+  });
+
+  pollStats();
+  setInterval(pollStats, 500);
+</script>
+</body>
+</html>
